@@ -1,0 +1,465 @@
+/*
+--===========================================================================================================
+QUALITY CHECKS
+--===========================================================================================================
+SCRIPT PURPOSE:
+  THIS SCRIPT PERFROMS VARIOUS QUALITY CHECKS FOR DATA CONSISTENCY, ACCURACY, AND 
+  STANDARDIZATION ACROSS THE 'SILVER' SCHEMAS. IT INCLUDES CHECKS FOR:
+  - NULL OR DUPLICATE PRIMARY KEYS.
+  - UNWANTED SPACES IN STRING FIELDS.
+  - DATA STANDARDIZATION AND CONSISTENCY.
+  - INVALID DATE RANGES AND ORDERS.
+  - DATA CONSISTENCY BETWEEN REALTED FIELDS.
+
+  USAGE NOTES:
+  - RUN THESE CHECKS AFTER DATA LOADING SILVER LAYER.
+  - INVESTIGATE AND RESOLVE ANY DISCREPANCIES FOUND DURING THE CHECKS.
+--===========================================================================================================
+*/
+
+--===========================================================================================================
+--CHECKING FOR CRM_CUST_INFO
+--===========================================================================================================
+
+--===========================================================================================================
+-- CHECK FOR NULLS OR DUPLICATES IN PRIMARY KEY
+-- EXPECTATION: NO RESULT
+--===========================================================================================================
+
+-- COUNT(CST_ID) IGNORES NULL VALUES SO USE COUNT(*)
+SELECT
+CST_ID,
+COUNT(*)
+FROM BRONZE.CRM_CUST_INFO
+GROUP BY CST_ID
+HAVING COUNT(*) > 1;
+---------------------------------------------------------------------------------
+SELECT 
+*
+FROM BRONZE.CRM_CUST_INFO
+WHERE CST_ID = 29449;
+---------------------------------------------------------------------------------
+SELECT 
+CST_ID,
+CST_KEY,
+CST_FIRSTNAME AS CST_FIRSTNAME,
+CST_LASTNAME AS CST_LASTNAME,
+CST_GNDR, 
+CST_MARITAL_STATUS
+FROM(
+SELECT
+*,
+ROW_NUMBER() OVER(PARTITION BY CST_ID ORDER BY CST_CREATE_DATE desc) as FLAG
+FROM BRONZE.CRM_CUST_INFO
+WHERE CST_ID IS NOT NULL
+)T
+WHERE FLAG = 1 
+
+--===========================================================================================================
+-- CHECK FOR UNWANTED SPACES
+-- EXPECTATION: NO RESULTS
+--===========================================================================================================
+SELECT
+CST_FIRSTNAME
+FROM BRONZE.CRM_CUST_INFO
+WHERE CST_FIRSTNAME != TRIM(CST_FIRSTNAME)
+---------------------------------------------------------------------------------
+SELECT
+CST_LASTNAME
+FROM BRONZE.CRM_CUST_INFO
+WHERE CST_LASTNAME != TRIM(CST_LASTNAME)
+---------------------------------------------------------------------------------
+SELECT
+CST_GNDR
+FROM BRONZE.CRM_CUST_INFO
+WHERE CST_GNDR != TRIM(CST_GNDR)
+---------------------------------------------------------------------------------
+SELECT
+CST_MARITAL_STATUS
+FROM BRONZE.CRM_CUST_INFO
+WHERE CST_MARITAL_STATUS != TRIM(CST_MARITAL_STATUS)
+---------------------------------------------------------------------------------
+SELECT 
+TRIM(CST_FIRSTNAME) AS CST_FIRSTNAME,
+TRIM(CST_LASTNAME) AS CST_LASTNAME,
+CST_GNDR,
+CST_MARITAL_STATUS
+FROM BRONZE.CRM_CUST_INFO;
+
+--===========================================================================================================
+--CHECK CONSISTENCY AND QUALITY OF DATA
+--===========================================================================================================
+SELECT DISTINCT
+CST_GNDR
+FROM BRONZE.CRM_CUST_INFO;
+---------------------------------------------------------------------------------
+SELECT DISTINCT
+CST_MARITAL_STATUS
+FROM BRONZE.CRM_CUST_INFO;
+---------------------------------------------------------------------------------
+SELECT * FROM BRONZE.CRM_CUST_INFO
+
+--===========================================================================================================
+-- CHECK DUPLICATES AND NULL IN THE ID COLUMN
+--===========================================================================================================
+-- PRD_KEY => CAT_KEY + PRD_KEY
+--===========================================================================================================
+-- CHECK NULLS AND NEGATIVES IN THE COST
+--===========================================================================================================
+-- REPLACE THE ABBREVIATIONS WITH THE FULL NAMES
+--===========================================================================================================
+-- CHECK FOR SPACES IN STRING VALUES (TRIM)
+--===========================================================================================================
+-- DATA STANDARDIZATION AND CONSISTENCY (UPPER OR LOWER)
+--===========================================================================================================
+-- END DATE MUST NOT BE EARLIER THAN THE START DATE (CHECK FOR INVALID DATE ORDER)
+
+--SOLUTIONS
+--1. SWITCH END DATE AND START DATE 
+-- ISSUE IN THIS: 
+-- THE DATES ARE OVERLAPPING (THE SAME PRODUCT IS IN MULTIPLE ROWS)
+-- EACH RECORD MUST HAVE A START DATE (INCASE OF NULL)
+
+--2. DERIVE THE END DATE FROM THE START DATE
+-- END DATE = START DATE OF THE 'NEXT' RECORD - 1
+-- THE END DATE CAN BE NULL
+--===========================================================================================================
+
+-- CHECKING FOR DUPLICATES
+SELECT
+PRD_ID,
+COUNT(*) AS COUNT_NUM_ID
+FROM BRONZE.CRM_PRD_INFO
+GROUP BY PRD_ID
+HAVING COUNT(*)>1;
+
+-- SPILT PRD KEY INTO CAT AND PRD KEY FOR JOIN OPERATIONS WITH OTHER TABLES
+SELECT
+PRD_KEY,
+REPLACE(SUBSTRING(PRD_KEY,1, 5), '-', '_') AS CAT_KEY,
+SUBSTRING(PRD_KEY, 7, LEN(PRD_KEY)) AS PRD_KEY
+FROM BRONZE.CRM_PRD_INFO
+-- CHECKING THE UNMATCHED DATA AFTER THE TRANSFORMATION I.E. THESE ARE THE CATEGORIES THAT HAVENT BEEN BOUGHT BY THE CUSTOMERS
+WHERE REPLACE(SUBSTRING(PRD_KEY,1, 5), '-', '_') NOT IN
+(SELECT ID FROM BRONZE.ERP_PX_CAT_G1V2);
+
+SELECT
+PRD_KEY,
+REPLACE(SUBSTRING(PRD_KEY,1, 5), '-', '_') AS CAT_KEY,
+SUBSTRING(PRD_KEY, 7, LEN(PRD_KEY)) AS PRD_KEY
+FROM BRONZE.CRM_PRD_INFO
+-- CHECKING THE UNMATCHED DATA AFTER THE TRANSFORMATION I.E. THESE ARE THE PRODUCTS THAT HAVENT BEEN BOUGHT BY THE CUSTOMERS
+WHERE SUBSTRING(PRD_KEY, 7, LEN(PRD_KEY)) NOT IN
+(SELECT SLS_PRD_KEY FROM BRONZE.CRM_SALES_DETAILS);
+
+-- CHECKING FOR TRAILING SPACES
+SELECT
+PRD_NM
+FROM BRONZE.CRM_PRD_INFO
+WHERE PRD_NM != TRIM(PRD_NM);
+
+-- CHECKING FOR NEGATIVES AND NULL
+SELECT
+ISNULL(PRD_COST,0) AS PRD_COST
+FROM BRONZE.CRM_PRD_INFO
+WHERE PRD_COST < 0 OR PRD_COST IS NULL;
+
+-- REPLACING THE ABBREVIATED TERMS BY THE FULL NAMES
+SELECT
+CASE UPPER(TRIM(PRD_LINE)) -- UPPER AND TRIM IS USED FOR JUST INCASE, DONT REALLY NEED IT HERE
+	WHEN 'M' THEN 'MOUNTAIN'
+	WHEN 'R' THEN 'ROAD'
+	WHEN 'S' THEN 'OTHER SALES'
+	WHEN 'T' THEN 'TOURING'
+	ELSE 'N/A'
+END AS PRD_LINE
+FROM BRONZE.CRM_PRD_INFO;
+
+-- CHECKING THE START AND END DATES
+SELECT *,
+LEAD(PRD_START_DT) OVER(PARTITION BY PRD_KEY ORDER BY PRD_START_DT)-1 AS PRD_END_DT_TEST
+FROM BRONZE.CRM_PRD_INFO
+WHERE PRD_KEY IN ('AC-HE-HL-U509-R', 'AC-HE-HL-U509');
+
+SELECT * FROM BRONZE.ERP_PX_CAT_G1V2;
+
+SELECT * FROM BRONZE.CRM_SALES_DETAILS;
+
+SELECT * FROM SILVER.CRM_PRD_INFO;
+
+SELECT * FROM SILVER.CRM_CUST_INFO;
+
+--===========================================================================================================
+--CHECKING FOR CRM_SALES_DETAILS
+--===========================================================================================================
+SELECT
+*
+FROM BRONZE.CRM_SALES_DETAILS;
+---------------------------------------------------------------------------------
+
+-- CHECKING FOR SPACES
+SELECT
+SLS_ORD_NUM
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE SLS_ORD_NUM != TRIM(SLS_ORD_NUM);
+---------------------------------------------------------------------------------
+-- CHECKING FOR RELEVANT DATA (ALL PRODUCTS IN THE PRODUCT INFO TABLE IF SOLD ATLEAST ONCE)
+SELECT
+SLS_PRD_KEY
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE SLS_PRD_KEY NOT IN 
+(SELECT PRD_KEY FROM SILVER.CRM_PRD_INFO);
+
+SELECT
+SLS_CUST_ID
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE SLS_CUST_ID NOT IN 
+(SELECT CST_ID FROM SILVER.CRM_CUST_INFO);
+---------------------------------------------------------------------------------
+-- CHANGING DATATYPE INTO DATE
+SELECT
+SLS_ORDER_DT
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE ISDATE(SLS_ORDER_DT) = 0; -- CHECKS IF IT CAN BE CONVERTED INTO DATE
+
+--SLS_ORDER_DT
+--SLS_SHIP_DT
+--SLS_DUE_DT
+
+SELECT
+CAST(CAST(SLS_ORDER_DT AS NVARCHAR) AS DATE) AS SLS_DUE_DT_DATE
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE ISDATE(SLS_ORDER_DT) = 1;
+
+SELECT
+CASE 
+	WHEN ISDATE(SLS_ORDER_DT) = 0 THEN NULL
+	ELSE CAST(CAST(SLS_ORDER_DT AS NVARCHAR) AS DATE) 
+END AS SLS_DUE_DT
+FROM BRONZE.CRM_SALES_DETAILS;
+
+SELECT
+CASE
+    WHEN SLS_DUE_DT IS NULL OR SLS_DUE_DT = 0 
+        THEN NULL
+    ELSE TRY_CAST(CAST(SLS_DUE_DT AS VARCHAR) AS DATE)
+END AS SLS_DUE_DT
+FROM BRONZE.CRM_SALES_DETAILS;
+
+--###########################################################################################################
+-- CHECK TRY_CAST AND TRY_CONVERT
+-- RETURNS NULL IN PLACE OF 0 AND RETURNS CAST VALUE IN OF 1 (FOR TRY_CAST)
+-- ISDATE() GIVES AN ERROR IS THE VALUE IS ALREADY A DATE BUT 
+-- TRY_CAST DIRECTLY CONVERTS INTO DATE IF NOT DATE AND REMAINS AS DATE IF IT IS ALREADY A DATE
+-- AND CONVERTS INTO NULL IF IT CANNOT BE CONVERTED INTO DATE.
+--###########################################################################################################
+
+-- CHECK FOR OUTLIERS IN THE DATE
+SELECT
+*
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE SLS_ORDER_DT < 19000101 OR SLS_ORDER_DT > 20300101;
+
+-- ORDER DATE MUST ALWAYS BE EARLIER THAN THE SHIPPING DATE OR DUE DATE
+SELECT
+*
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE SLS_ORDER_DT > SLS_SHIP_DT OR SLS_ORDER_DT > SLS_DUE_DT;
+---------------------------------------------------------------------------------
+-- CHECK FOR SALES, QUANTITY AND PRICE COLUMN
+SELECT 
+SLS_SALES,
+SLS_QUANTITY,
+SLS_PRICE
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE SLS_SALES <= 0 OR SLS_SALES IS NULL
+OR SLS_QUANTITY <= 0 OR SLS_QUANTITY IS NULL
+OR SLS_PRICE <= 0 OR SLS_PRICE IS NULL
+OR SLS_PRICE * SLS_QUANTITY != SLS_SALES;
+
+-- CHECK IF PRICE * QUANTITY = SALES
+SELECT
+SLS_SALES,
+SLS_QUANTITY,
+SLS_PRICE
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE SLS_PRICE * SLS_QUANTITY != SLS_SALES;
+
+---------------------------------------------------------------------------------
+-- FIXING PRICE, QUANTITY AND SALES AMOUNT
+-- SOLUTIONS (TALK TO THE EXPERTS FROM THE BUSINESS OR SOURCE SYSTEM)
+-- 1. DATA ISSUES WILL BE FIXED DIRECT IN SOURCE SYSTEM
+-- 2. DATA ISSUES HAS TO BE FIXED IN DATA WAREHOUSE
+
+-- IF SALES IS NEGATIVE, ZERO OR NULL DERIVE IT USING QUANTITY AND PRICE BY MULTIPLYING
+-- IF PRICE IS ZERO OR NULL, CALCULATE IT USING SALES AND QUANTITY
+-- IF PRICE IS NEGATIVE, CONVERT IT TO A POSITIVE VALUE
+---------------------------------------------------------------------------------
+SELECT
+SLS_PRICE,
+SLS_QUANTITY,
+SLS_PRICE * SLS_QUANTITY AS SLS_SALES
+FROM(
+SELECT
+CASE
+	WHEN SLS_QUANTITY IS NULL THEN 0 
+	WHEN SLS_QUANTITY != ABS(SLS_QUANTITY) THEN ABS(SLS_QUANTITY)
+	ELSE SLS_QUANTITY
+END AS SLS_QUANTITY,
+CASE 
+	WHEN SLS_PRICE IS NULL THEN 0 
+	WHEN SLS_PRICE != ABS(SLS_PRICE) THEN ABS(SLS_PRICE)
+	ELSE SLS_PRICE
+END AS SLS_PRICE
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE SLS_SALES <= 0 OR SLS_SALES IS NULL
+OR SLS_QUANTITY <= 0 OR SLS_QUANTITY IS NULL
+OR SLS_PRICE <= 0 OR SLS_PRICE IS NULL
+OR SLS_PRICE * SLS_QUANTITY != SLS_SALES
+)T;
+---------------------------------------------------------------------------------
+
+SELECT
+SLS_PRICE * SLS_QUANTITY AS SLS_SALES
+FROM(
+SELECT
+SLS_QUANTITY,
+CASE 
+	WHEN SLS_PRICE IS NULL OR SLS_PRICE <= 0 THEN SLS_SALES/NULLIF(SLS_QUANTITY,0)
+	ELSE SLS_PRICE
+END AS SLS_PRICE
+FROM BRONZE.CRM_SALES_DETAILS
+WHERE SLS_SALES <= 0 OR SLS_SALES IS NULL
+OR SLS_QUANTITY <= 0 OR SLS_QUANTITY IS NULL
+OR SLS_PRICE <= 0 OR SLS_PRICE IS NULL
+OR SLS_PRICE * SLS_QUANTITY != SLS_SALES
+)T;
+
+SELECT
+*
+FROM BRONZE.CRM_SALES_DETAILS;
+
+--===========================================================================================================
+--CHECKING FOR ERP_CUST_AZ12
+--===========================================================================================================
+SELECT
+TRIM(CID)
+FROM BRONZE.ERP_CUST_AZ12
+WHERE TRIM(CID) != CID;
+
+SELECT
+*,
+CASE
+	WHEN LEFT(CID, 3) = 'NAS' THEN SUBSTRING(CID, 4, LEN(CID))
+	ELSE CID
+END CST_KEY
+FROM BRONZE.ERP_CUST_AZ12;
+
+SELECT
+*,
+TRY_CAST(BDATE AS DATE) AS TRY
+FROM BRONZE.ERP_CUST_AZ12
+WHERE TRY_CAST(BDATE AS DATE) IS NULL;
+
+SELECT
+*
+FROM BRONZE.ERP_CUST_AZ12
+WHERE BDATE < '1926-01-01' OR BDATE > GETDATE();
+
+SELECT
+CASE 
+	WHEN BDATE > GETDATE() THEN NULL
+	ELSE BDATE
+END AS BDATE
+FROM BRONZE.ERP_CUST_AZ12
+;
+
+SELECT
+TRIM(GEN)
+FROM BRONZE.ERP_CUST_AZ12
+WHERE TRIM(GEN) != GEN;
+
+SELECT DISTINCT
+GEN
+FROM BRONZE.ERP_CUST_AZ12;
+
+SELECT
+*,
+CASE
+	WHEN TRIM(UPPER(GEN)) IN ('F', 'FEMALE') THEN 'FEMALE'
+	WHEN TRIM(UPPER(GEN)) IN ('M', 'MALE') THEN 'MALE'
+	ELSE 'N/A'
+END AS GEN
+FROM BRONZE.ERP_CUST_AZ12;
+
+SELECT
+*
+FROM BRONZE.ERP_CUST_AZ12;
+
+SELECT
+*
+FROM BRONZE.CRM_CUST_INFO;
+
+--===========================================================================================================
+--CHECKING FOR ERP_LOC_A101
+--===========================================================================================================
+
+SELECT
+*
+FROM BRONZE.ERP_LOC_A101
+WHERE CID NOT LIKE 'AW%';
+
+SELECT
+CID
+FROM BRONZE.ERP_LOC_A101
+WHERE TRIM(CID) != CID;
+
+SELECT
+REPLACE(CID, '-', '') AS CID
+FROM BRONZE.ERP_LOC_A101
+WHERE CID LIKE 'AW%';
+
+SELECT *
+FROM BRONZE.ERP_LOC_A101;
+
+SELECT
+CASE
+	WHEN TRIM(CNTRY) IN ('USA', 'US') THEN 'United States'
+	WHEN TRIM(CNTRY) = 'DE' THEN 'Germany'
+	WHEN TRIM(CNTRY) = '' OR CNTRY IS NULL THEN 'N/A'
+	ELSE TRIM(CNTRY)
+END AS CNTRY
+FROM BRONZE.ERP_LOC_A101;
+
+SELECT
+*
+FROM BRONZE.ERP_LOC_A101;
+
+--===========================================================================================================
+--CHECKING FOR ERP_PX_CAT_G1V2
+--===========================================================================================================
+
+SELECT
+*
+FROM BRONZE.ERP_PX_CAT_G1V2
+WHERE TRIM(MAINTENANCE) != MAINTENANCE OR TRIM(CAT) != CAT OR TRIM(SUBCAT) != SUBCAT;
+
+SELECT DISTINCT
+CAT
+FROM BRONZE.ERP_PX_CAT_G1V2;
+
+SELECT DISTINCT
+SUBCAT
+FROM BRONZE.ERP_PX_CAT_G1V2;
+
+SELECT DISTINCT
+MAINTENANCE
+FROM BRONZE.ERP_PX_CAT_G1V2;
+
+SELECT
+*
+FROM BRONZE.ERP_PX_CAT_G1V2;
+
+SELECT
+*
+FROM SILVER.CRM_PRD_INFO;
